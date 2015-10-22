@@ -14,12 +14,7 @@ var dockerbuild = require('../lib/build');
 
 // - Globals
 
-var expectedFailures = {
-    'addRemote': 'Error: Not implemented: Add Remote:',
-    'helloWorldRun': 'Error: Not implemented: RUN',
-    'fromBusyboxLabelEnvRun': 'Error: Not implemented: FROM handling'
-};
-
+var testContextDir = path.join(__dirname, 'files');
 var tarExe = 'tar';
 if (process.platform === 'sunos') {
     tarExe = 'gtar';
@@ -27,25 +22,19 @@ if (process.platform === 'sunos') {
 
 // - Tests
 
-tape('setup', function (t) {
-
-    var testContextDir = path.join(__dirname, 'files');
-    fs.readdirSync(testContextDir).forEach(function (fname) {
-        if (fname.slice(-4) === '.tar') {
-            // It's a build context - test it.
-            if (fname.slice(0, -4) !== 'helloWorldRun') {
-                return;
+function testBuildContext(t, fpath, callback) {
+    var ringbuffer = new bunyan.RingBuffer({ limit: 10 });
+    var log = bunyan.createLogger({
+        name: ' ',
+        streams: [
+            {
+                level: 'debug',
+                type: 'raw',
+                stream: ringbuffer
             }
-            t.test(fname.slice(0, -4), function (tt) {
-                testBuildContext(tt, path.join(testContextDir, fname));
-            });
-        }
+        ]
     });
-});
-
-function testBuildContext(t, fpath) {
-    var log = bunyan.createLogger({ name: ' ' });
-    log.level('debug');
+    log.rbuffer = ringbuffer;
 
     var uuid = libuuid.create();
     var tmpDir = os.tmpDir();
@@ -66,18 +55,24 @@ function testBuildContext(t, fpath) {
         containerRootDir: zoneRoot
     };
 
+    var messages = [];
     var tasks = [];
 
     var builder = new dockerbuild.Builder(opts);
     monkeyPatchBuilder(builder);
 
-    builder.on('event', function (event) {
+    builder.on('message', function (event) {
+        messages.push(event);
     });
 
-    builder.on('task', function (event) {
+    builder.on('task', function (task) {
+        var result = [null];
+        if (t.hasOwnProperty('buildTaskHandler')) {
+            result = t.buildTaskHandler(builder, task);
+        }
         tasks.push(task);
-        if (event.callback) {
-            event.callback();
+        if (task.callback) {
+            task.callback.apply(null, result);
         }
     });
 
@@ -87,15 +82,12 @@ function testBuildContext(t, fpath) {
             if (rmerr) {
                 log.error('Failed to cleanup directory %s: %s', zoneDir, rmerr);
             }
-            var failMsg = expectedFailures[t.name];
-            if (failMsg) {
-                t.ok(String(err).indexOf(failMsg) >= 0,
-                    'Build failed as expected');
-            } else {
-                t.ifErr(err, 'check build successful');
-            }
-            t.ifErr(rmerr, 'build cleanup');
-            t.end();
+            var result = {
+                builder: builder,
+                messages: messages,
+                tasks: tasks
+            };
+            callback(err || rmerr, result);
         });
     });
 
@@ -131,3 +123,206 @@ function monkeyPatchBuilder(builder) {
     };
 
 }
+
+
+function showError(t, err, builder) {
+    t.ifErr(err, 'check build successful');
+    if (err) {
+        var records = builder.log.rbuffer.records;
+        if (records.length > 0) {
+            console.log('  ---\n');
+            console.log('    Last %d log messages:\n', records.length, records);
+            console.log('  ...\n');
+        }
+        t.end();
+        return true;
+    }
+    return false;
+}
+
+
+tape('helloWorldRun', function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+
+    // Give a result to the run command.
+    t.buildTaskHandler = function (builder, event) {
+        if (event.type === 'run') {
+            return [ null, { exitCode: 0 } ];
+        }
+    };
+
+    testBuildContext(t, contextFilepath, function (err, result) {
+        if (showError(t, err, result.builder)) {
+            return;
+        }
+
+        var builder = result.builder;
+        var messages = result.messages;
+        var expectedMessages = [
+            { type: 'stdout', message: 'Step 0 : FROM scratch\n' },
+            { type: 'stdout', message: ' --->\n' },
+            { type: 'stdout', message: 'Step 1 : COPY hello /\n' },
+            { type: 'stdout', message: 'Step 2 : CMD /hello\n' },
+            { type: 'stdout', message: 'Step 3 : RUN /hello\n' },
+            { type: 'stdout', message: util.format('Successfully built %s\n',
+                                                    builder.getShortId()) }
+        ];
+        t.deepEqual(messages, expectedMessages, 'check message events');
+
+        var tasks = result.tasks;
+        var expectedTasks = {
+            cmd: [ '/hello' ],
+            env: [],
+            type: 'run',
+            user: '',
+            workdir: '/'
+        };
+        delete tasks[0]['callback'];
+        t.deepEqual(tasks[0], expectedTasks, 'check tasks');
+
+        t.end();
+    });
+});
+
+
+tape('busybox', function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+
+    testBuildContext(t, contextFilepath, function (err, result) {
+        if (showError(t, err, result.builder)) {
+            return;
+        }
+
+        var builder = result.builder;
+        var messages = result.messages;
+        var expectedMessages = [
+            { type: 'stdout', message: 'Step 0 : FROM scratch\n' },
+            { type: 'stdout', message: ' --->\n' },
+            { type: 'stdout', message: 'Step 1 : LABEL [object Object]\n' },
+            { type: 'stdout', message: 'Step 2 : MAINTAINER Jérôme Petazzoni'
+                                        + ' <jerome@docker.com>\n' },
+            { type: 'stdout', message: 'Step 3 : ADD rootfs.tar /\n' },
+            { type: 'stdout', message: util.format('Successfully built %s\n',
+                                                    builder.getShortId()) }
+        ];
+        t.deepEqual(messages, expectedMessages, 'check message events');
+
+        t.end();
+    });
+});
+
+
+tape('fromBusyboxLabel', function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+
+    // Return a result for the busybox image task.
+    t.buildTaskHandler = function (builder, event) {
+        if (event.type === 'image_reprovision') {
+            var result = {
+                'image': {
+                    'config': {
+                        'Cmd': [
+                            'sh'
+                        ],
+                        'Image': 'cfa753dfea5e68a24366dfba16e6edf573'
+                                + 'daa447abf65bc11619c1a98a3aff54'
+                    }
+                }
+            };
+            return [ null, result ];
+        }
+    };
+
+    testBuildContext(t, contextFilepath, function (err, result) {
+        if (showError(t, err, result.builder)) {
+            return;
+        }
+
+        var builder = result.builder;
+        var messages = result.messages;
+        var expectedMessages = [
+            { type: 'stdout', message: 'Step 0 : FROM busybox\n' },
+            { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
+            { type: 'stdout', message: 'Step 1 : LABEL [object Object]\n' },
+            { type: 'stdout', message: util.format('Successfully built %s\n',
+                                                    builder.getShortId()) }
+        ];
+        t.deepEqual(messages, expectedMessages, 'check message events');
+
+        t.end();
+    });
+});
+
+
+tape('addDirectory', function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+
+    testBuildContext(t, contextFilepath, function (err, result) {
+        if (showError(t, err, result.builder)) {
+            return;
+        }
+
+        var builder = result.builder;
+        var messages = result.messages;
+        var expectedMessages = [
+            { type: 'stdout', message: 'Step 0 : FROM scratch\n' },
+            { type: 'stdout', message: ' --->\n' },
+            { type: 'stdout', message: 'Step 1 : ADD data /data/\n' },
+            { type: 'stdout', message: util.format('Successfully built %s\n',
+                                                    builder.getShortId()) }
+        ];
+        t.deepEqual(messages, expectedMessages, 'check message events');
+
+        t.end();
+    });
+});
+
+
+tape('addDirectoryRoot', function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+
+    testBuildContext(t, contextFilepath, function (err, result) {
+        if (showError(t, err, result.builder)) {
+            return;
+        }
+
+        var builder = result.builder;
+        var messages = result.messages;
+        var expectedMessages = [
+            { type: 'stdout', message: 'Step 0 : FROM scratch\n' },
+            { type: 'stdout', message: ' --->\n' },
+            { type: 'stdout', message: 'Step 1 : COPY . /\n' },
+            { type: 'stdout', message: util.format('Successfully built %s\n',
+                                                    builder.getShortId()) }
+        ];
+        t.deepEqual(messages, expectedMessages, 'check message events');
+
+        t.end();
+    });
+});
+
+
+// tape('addRemote', function (t) {
+//    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+//
+//    testBuildContext(t, contextFilepath, function (err, result) {
+//        if (showError(t, err, result.builder)) {
+//            return;
+//        }
+//
+//        var builder = result.builder;
+//        var messages = result.messages;
+//        var expectedMessages = [
+//            { type: 'stdout', message: 'Step 0 : FROM scratch\n' },
+//            { type: 'stdout', message: ' --->\n' },
+//            { type: 'stdout', message: 'Step 1 : ADD https://raw.github'
+//                  + 'usercontent.com/joyent/sdc-docker/master/bin/'
+//                  + 'sdc-dockeradm /\n' },
+//            { type: 'stdout', message: util.format('Successfully built %s\n',
+//                                                    builder.getShortId()) }
+//        ];
+//        t.deepEqual(messages, expectedMessages, 'check message events');
+//
+//        t.end();
+//    });
+// });
