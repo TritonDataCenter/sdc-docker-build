@@ -24,7 +24,7 @@ tape('shell parser', function (t) {
             t.end();
             return;
         }
-        var envs = ["PWD=/home", "SHELL=bash"];
+        var envs = ['PWD=/home', 'SHELL=bash'];
         var lines = String(contents).split('\n');
 
         lines.forEach(function (line) {
