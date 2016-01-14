@@ -145,12 +145,6 @@ function testBuildContext(t, fpath, opts, callback) {
 }
 
 function testEnd(t, builder, hadErr) {
-    // XXX: remove me
-    if (t.name === 'symlinks') {
-        t.end();
-        return;
-    }
-
     if (hadErr) {
         t.end();
         return;
@@ -183,7 +177,8 @@ function handleExtractTarfile(builder, event, ignoreTarExtractionError) {
         var command = util.format('%s -C %s -xf %s',
             tarExe, extractDir, tarfile);
         if (event.hasOwnProperty('stripDirCount')) {
-            command += util.format(' --strip-components=%d', event.stripDirCount);
+            command += util.format(' --strip-components=%d',
+                event.stripDirCount);
         }
         if (event.hasOwnProperty('replacePattern')) {
             command += util.format(' -s %s', event.replacePattern);
@@ -321,7 +316,8 @@ tape('helloWorldRun', function (t) {
 
         var expectedHelloTask = {
             cmd: [ '/hello', 'how', 'are', 'you' ],
-            env: [ 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' ],
+            env: [ 'PATH=/usr/local/sbin:/usr/local/bin:'
+                + '/usr/sbin:/usr/bin:/sbin:/bin' ],
             type: 'run',
             user: '',
             workdir: '/'
@@ -610,6 +606,133 @@ tape('addTarfileAsFile', function (t) {
                                                     builder.getShortId()) }
         ];
         t.deepEqual(messages, expectedMessages, 'check message events');
+
+        testEnd(t, builder);
+    });
+});
+
+
+tape('addWildcard', function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+    var opts = {
+        'fromBusyboxImage': true
+    };
+
+    testBuildContext(t, contextFilepath, opts, function (err, result) {
+        if (showError(t, err, result.builder)) {
+            return;
+        }
+
+        var builder = result.builder;
+        var messages = result.messages;
+        var vmId = builder.zoneUuid;
+        var expectedMessages = [
+            { type: 'stdout', message: 'Step 1 : FROM busybox\n' },
+            { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
+            { type: 'stdout', message: 'Step 2 : COPY file*.txt /tmp/\n' },
+            { type: 'stdout', message: getBuildStepOutput(builder, 2) },
+            { type: 'stdout', message: 'Step 3 : RUN ls /tmp/file1.txt '
+                + '/tmp/file2.txt\n' },
+            { type: 'stdout', message: util.format(' ---> Running in %s\n',
+                                                    builder.getShortId(vmId)) },
+            { type: 'stdout', message: getBuildStepOutput(builder, 3) },
+            { type: 'stdout', message: 'Step 4 : RUN mkdir /tmp1\n' },
+            { type: 'stdout', message: util.format(' ---> Running in %s\n',
+                                                    builder.getShortId(vmId)) },
+            { type: 'stdout', message: getBuildStepOutput(builder, 4) },
+            { type: 'stdout', message: 'Step 5 : COPY dir* /tmp1/\n' },
+            { type: 'stdout', message: getBuildStepOutput(builder, 5) },
+            { type: 'stdout', message: 'Step 6 : RUN ls /tmp1\n' },
+            { type: 'stdout', message: util.format(' ---> Running in %s\n',
+                                                    builder.getShortId(vmId)) },
+            { type: 'stdout', message: getBuildStepOutput(builder, 6) },
+            { type: 'stdout', message: 'Step 7 : RUN ls /tmp1/dirt '
+                + '/tmp1/nested_file /tmp1/nested_dir/nest_nest_file\n' },
+            { type: 'stdout', message: util.format(' ---> Running in %s\n',
+                                                    builder.getShortId(vmId)) },
+            { type: 'stdout', message: getBuildStepOutput(builder, 7) },
+            { type: 'stdout', message: 'Step 8 : RUN mkdir /tmp2\n' },
+            { type: 'stdout', message: util.format(' ---> Running in %s\n',
+                                                    builder.getShortId(vmId)) },
+            { type: 'stdout', message: getBuildStepOutput(builder, 8) },
+            { type: 'stdout', message: 'Step 9 : ADD dir/*dir robots.txt '
+                + '/tmp2/\n' },
+            { type: 'stdout', message: getBuildStepOutput(builder, 9) },
+            { type: 'stdout', message: 'Step 10 : RUN ls /tmp2/nest_nest_file '
+                + '/tmp2/robots.txt\n' },
+            { type: 'stdout', message: util.format(' ---> Running in %s\n',
+                                                    builder.getShortId(vmId)) },
+            { type: 'stdout', message: getBuildStepOutput(builder, 10) },
+            { type: 'stdout', message: util.format('Successfully built %s\n',
+                                                    builder.getShortId()) }
+        ];
+        t.deepEqual(messages, expectedMessages, 'check message events');
+
+        // Make sure the correct files were copied.
+        var dirsToCheck = {
+            'tmp': {
+                expectedNames: [
+                    'file1.txt',
+                    'file2.txt'
+                ]
+            },
+            'tmp1': {
+                expectedNames: [
+                    'dirt',
+                    'nested_dir',
+                    'nested_file'
+                ]
+            },
+            'tmp1/nested_dir': {
+                expectedNames: [
+                    'nest_nest_file'
+                ]
+            },
+            'tmp2': {
+                expectedNames: [
+                    'nest_nest_file',
+                    'robots.txt'
+                ]
+            }
+        };
+
+        Object.keys(dirsToCheck).some(function (d) {
+            var expectedNames = dirsToCheck[d].expectedNames;
+            var names;
+            try {
+                names = fs.readdirSync(path.join(builder.containerRootDir, d));
+            } catch (e) {
+                t.fail('cannot list /tmp1 directory');
+                showError(t, e, builder);
+                return true;
+            }
+            if (!jsprim.deepEqual(names, expectedNames)) {
+                t.deepEqual(names, expectedNames,
+                    'Incorrect entries copied to ' + d);
+                showError(t, new Error('Invalid wildcard copy ' + d), builder);
+                return true;
+            }
+        });
+
+        testEnd(t, builder);
+    });
+});
+
+
+tape('addMissingFile', function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar');
+    var opts = {
+        'fromBusyboxImage': true
+    };
+
+    testBuildContext(t, contextFilepath, opts, function (err, result) {
+        var builder = result.builder;
+        var expectedErr = 'stat robots.txt: no such file or directory';
+        if (!err) {
+            t.fail('Expected a build error');
+        } else if (String(err).indexOf(expectedErr) === -1) {
+            t.fail('Expected "robots.txt" missing error, got' + err);
+        }
 
         testEnd(t, builder);
     });
