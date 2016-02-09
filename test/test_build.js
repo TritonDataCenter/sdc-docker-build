@@ -19,6 +19,9 @@ var libuuid = require('libuuid');
 var mkdirp = require('mkdirp');
 var rimraf = require('rimraf');
 var tape = require('tape');
+var tar = require('tar-stream');
+// Track and cleanup temporary files at exit.
+var temp = require('temp').track();
 
 var dockerbuild = require('../lib/build');
 
@@ -203,6 +206,34 @@ function handleExtractTarfile(builder, event, ignoreTarExtractionError) {
     });
 }
 
+function createTarStream(fileAndContents) {
+    var pack = tar.pack();
+
+    Object.keys(fileAndContents).forEach(function (name) {
+        pack.entry({ name: name }, fileAndContents[name]);
+    });
+
+    pack.finalize();
+
+    return pack;
+}
+
+function createTempTarFile(fileAndContents, callback) {
+    temp.open({suffix: '.tar'}, function(err, info) {
+        if (err) {
+            callback(err);
+            return;
+        }
+
+        // Pipe tar stream to a file and callback when all written.
+        var ws = fs.createWriteStream(null, {fd: info.fd});
+        ws.on('finish', function () {
+            callback(null, info.path);
+        });
+        var pack = createTarStream(fileAndContents);
+        pack.pipe(ws);
+    });
+}
 
 function convertEnvArrayToObject(envArray) {
     var result = {};
@@ -1118,6 +1149,33 @@ tape('symlinks', function (t) {
         t.equal(builder.containerRealpath('/linkWayUp/foo/bar'), '/foo/bar');
 
         testEnd(t, builder);
+    });
+});
+
+
+tape('FROM must be first', function (t) {
+    var fileAndContents = {
+        'Dockerfile': 'MAINTAINER me\nFROM busybox\n'
+    };
+    createTempTarFile(fileAndContents, function (tarErr, contextFilepath) {
+        if (tarErr) {
+            t.fail('Failed to create tar archive: ' + tarErr);
+            t.end();
+            return;
+        }
+
+        testBuildContext(t, contextFilepath, function (err, result) {
+            var builder = result.builder;
+            var expectedErr = 'Please provide a source image with `from` '
+                + 'prior to commit';
+            if (!err) {
+                t.fail('Expected a build error');
+            } else if (String(err).indexOf(expectedErr) === -1) {
+                t.fail('Expected `from` command error, got' + err);
+            }
+
+            testEnd(t, builder);
+        });
     });
 });
 
