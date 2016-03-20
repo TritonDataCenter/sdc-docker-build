@@ -219,7 +219,7 @@ function createTarStream(fileAndContents) {
 }
 
 function createTempTarFile(fileAndContents, callback) {
-    temp.open({suffix: '.tar'}, function(err, info) {
+    temp.open({suffix: '.tar'}, function _tempOpenCb(err, info) {
         if (err) {
             callback(err);
             return;
