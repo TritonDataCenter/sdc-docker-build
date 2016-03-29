@@ -35,6 +35,16 @@ if (process.platform === 'sunos') {
 
 // - Test helpers.
 
+function testBuildContents(t, fileAndContentsMap, opts, callback) {
+    createTempTarFile(fileAndContentsMap, function (tarErr, contextFilepath) {
+        if (tarErr) {
+            callback(new Error('Failed to create tar archive: ' + tarErr));
+            return;
+        }
+        testBuildContext(t, contextFilepath, opts, callback);
+    });
+}
+
 function testBuildContext(t, fpath, opts, callback) {
     if (typeof (callback) === 'undefined' && typeof (opts) === 'function') {
         callback = opts;
@@ -76,6 +86,7 @@ function testBuildContext(t, fpath, opts, callback) {
     var buildOpts = {
         log: log,
         uuid: uuid,
+        commandType: 'build',
         contextFilepath: fpath,
         workDir: configDir,
         containerRootDir: zoneRoot,
@@ -1157,25 +1168,42 @@ tape('FROM must be first', function (t) {
     var fileAndContents = {
         'Dockerfile': 'MAINTAINER me\nFROM busybox\n'
     };
-    createTempTarFile(fileAndContents, function (tarErr, contextFilepath) {
-        if (tarErr) {
-            t.fail('Failed to create tar archive: ' + tarErr);
-            t.end();
+    testBuildContents(t, fileAndContents, function (err, result) {
+        var builder = result.builder;
+        var expectedErr = 'Please provide a source image with `from` '
+            + 'prior to commit';
+        if (!err) {
+            t.fail('Expected a build error');
+        } else if (String(err).indexOf(expectedErr) === -1) {
+            t.fail('Expected `from` command error, got' + err);
+        }
+
+        testEnd(t, builder);
+    });
+});
+
+
+tape('onbuild', function (t) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM busybox',
+            'ONBUILD RUN python-build --dir /app/src'
+        ].join('\n')
+    };
+
+    testBuildContents(t, fileAndContents, function (err, result) {
+        if (showError(t, err, result.builder)) {
             return;
         }
 
-        testBuildContext(t, contextFilepath, function (err, result) {
-            var builder = result.builder;
-            var expectedErr = 'Please provide a source image with `from` '
-                + 'prior to commit';
-            if (!err) {
-                t.fail('Expected a build error');
-            } else if (String(err).indexOf(expectedErr) === -1) {
-                t.fail('Expected `from` command error, got' + err);
-            }
+        var builder = result.builder;
+        var img = builder.layers[builder.layers.length - 1].image;
+        var expectedOnBuild = [
+            'RUN python-build --dir /app/src'
+        ];
+        t.deepEqual(img.container_config.OnBuild, expectedOnBuild);
 
-            testEnd(t, builder);
-        });
+        testEnd(t, builder);
     });
 });
 
