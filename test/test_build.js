@@ -782,9 +782,14 @@ tape('addMissingFile', function (t) {
 
 
 tape('workdir', function (t) {
-    var contextFilepath = path.join(testContextDir, t.name + '.tar');
-
-    testBuildContext(t, contextFilepath, function (err, result) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM scratch',
+            'WORKDIR /test',
+            'WORKDIR subdir'
+        ].join('\n')
+    };
+    testBuildContents(t, fileAndContents, function (err, result) {
         if (showError(t, err, result.builder)) {
             return;
         }
@@ -792,6 +797,25 @@ tape('workdir', function (t) {
         var builder = result.builder;
         t.equal(builder.image.config.WorkingDir, '/test/subdir');
 
+        testEnd(t, builder);
+    });
+});
+
+
+// Ensure the WorkingDir path is correctly normalized.
+tape('workdir normpath', function (t) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM scratch',
+            'WORKDIR /test/../foo/'
+        ].join('\n')
+    };
+    testBuildContents(t, fileAndContents, function (err, result) {
+        if (showError(t, err, result.builder)) {
+            return;
+        }
+        var builder = result.builder;
+        t.equal(builder.image.config.WorkingDir, '/foo');
         testEnd(t, builder);
     });
 });
