@@ -1232,5 +1232,44 @@ tape('onbuild', function (t) {
 });
 
 
+// Ensure that adding a lot of small files doesn't error out, or take a long
+// time to complete.
+tape('addLotsOfFiles', { timeout: 60 * 1000 }, function (t) {
+    var contextFilepath = path.join(testContextDir, t.name + '.tar.gz');
+
+    testBuildContext(t, contextFilepath, function (err, result) {
+        var builder = result.builder;
+        if (showError(t, err, builder)) {
+            return;
+        }
+
+        // Verify directory contents - the tar file contains 100 directories
+        // (1..100), with each dir holding 100 files (1..100).
+        var NUM_FILES_AND_DIRS = 100;
+        var contents;
+        var expectedContents = [];
+        var i;
+        var root = builder.containerRootDir;
+        for (i = 1; i <= NUM_FILES_AND_DIRS; i++) {
+            expectedContents.push(String(i));
+        }
+        expectedContents = expectedContents.sort();
+        for (i = 1; i <= NUM_FILES_AND_DIRS; i++) {
+            contents = fs.readdirSync(path.join(root, String(i)));
+            contents = contents.sort();
+            t.deepEqual(contents, expectedContents, 'Checking dir entries');
+        }
+        // Verify the main dir (it should have an extra 'Dockerfile' filename).
+        expectedContents.push('Dockerfile');
+        expectedContents = expectedContents.sort();
+        contents = fs.readdirSync(root);
+        contents = contents.sort();
+        t.deepEqual(contents, expectedContents, 'Checking root dir entries');
+
+        testEnd(t, builder);
+    });
+});
+
+
 // Other:
 // 1. Test different command formats, i.e. 'RUN foo' and 'RUN ["foo"]'
