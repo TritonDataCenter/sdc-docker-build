@@ -1,0 +1,6 @@
+/.npmignore
+/deps
+/node_modules
+/test
+/tools
+/Makefile
