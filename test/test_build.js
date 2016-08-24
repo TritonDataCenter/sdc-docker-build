@@ -781,6 +781,32 @@ tape('addMissingFile', function (t) {
 });
 
 
+// DOCKER-918: Test copying a file to a directory, but leave out the trailing
+// slash. Following docker/docker this should be allowed.
+tape('copy to dir without trailing slash', function (t) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM busybox',
+            'RUN mkdir /adir',
+            'COPY file.txt /adir'
+        ].join('\n'),
+        'file.txt': 'hello'
+    };
+    testBuildContents(t, fileAndContents, function (err, result) {
+        var builder = result.builder;
+        if (showError(t, err, builder)) {
+            return;
+        }
+
+        var root = builder.containerRootDir;
+        var buf = fs.readFileSync(path.join(root, '/adir/file.txt'));
+        t.equal(buf.toString(), fileAndContents['file.txt'], 'Check file.txt');
+
+        testEnd(t, builder);
+    });
+});
+
+
 tape('workdir', function (t) {
     var fileAndContents = {
         'Dockerfile': [
