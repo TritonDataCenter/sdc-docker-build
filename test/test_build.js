@@ -13,6 +13,7 @@ var os = require('os');
 var path = require('path');
 var util = require('util');
 
+var assert = require('assert-plus');
 var bunyan = require('bunyan');
 var jsprim = require('jsprim');
 var libuuid = require('libuuid');
@@ -24,6 +25,7 @@ var tar = require('tar-stream');
 var temp = require('temp').track();
 
 var dockerbuild = require('../lib/build');
+var utils = require('../lib/utils');
 
 // - Globals
 
@@ -172,6 +174,50 @@ function testEnd(t, builder, hadErr) {
         }
         t.end(err);
     });
+}
+
+function verifyFileContents(t, builder, filepath, contents) {
+    var fullpath = path.join(builder.containerRootDir, filepath);
+    if (!fs.existsSync(fullpath)) {
+        t.fail('File ' + filepath + ' does not exist');
+    }
+    var actualContents = fs.readFileSync(fullpath).toString();
+    if (actualContents !== contents) {
+        t.equal(actualContents, contents,
+            'File contents for ' + filepath + ' do not match');
+    }
+}
+
+function verifyFilesystem(t, builder, containerPath, filesystem) {
+    var entry;
+    var fullpath = path.join(builder.containerRootDir, containerPath);
+    var i;
+    var name;
+    var relPath;
+    var stat;
+
+    // Assert the list of file names are correct.
+    var names = fs.readdirSync(fullpath);
+    var expectedNames = Object.keys(filesystem).sort();
+    t.deepEqual(names, expectedNames, 'Verifying fs ' + containerPath);
+
+    // Assert the file entries are of the expected type and have the correct
+    // content.
+    for (i = 0; i < names.length; i++) {
+        name = names[i];
+        entry = filesystem[name];
+        relPath = path.join(containerPath, name);
+        stat = fs.statSync(path.join(fullpath, name));
+        if (stat.isDirectory()) {
+            assert.object(entry, name);
+            verifyFilesystem(t, builder, relPath, entry);
+        } else if (stat.isFile()) {
+            assert.string(entry, name);
+            verifyFileContents(t, builder, relPath, entry);
+        } else {
+            t.fail('Unexpected file type at: ' + relPath);
+        }
+    }
 }
 
 function handleExtractTarfile(builder, event, ignoreTarExtractionError) {
@@ -798,9 +844,12 @@ tape('copy to dir without trailing slash', function (t) {
             return;
         }
 
-        var root = builder.containerRootDir;
-        var buf = fs.readFileSync(path.join(root, '/adir/file.txt'));
-        t.equal(buf.toString(), fileAndContents['file.txt'], 'Check file.txt');
+        var expectedFilesystem = {
+            'adir': {
+                'file.txt': fileAndContents['file.txt']
+            }
+        };
+        verifyFilesystem(t, builder, '/', expectedFilesystem);
 
         testEnd(t, builder);
     });
@@ -1258,6 +1307,146 @@ tape('onbuild', function (t) {
 });
 
 
+tape('relativeCopy', function (t) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM busybox',
+            'RUN mkdir /test4',
+            'WORKDIR /test4',
+            'COPY . .'
+        ].join('\n'),
+        'foo': 'hello',
+        'dir1/file1.txt': 'hello'
+    };
+
+    testBuildContents(t, fileAndContents, function (err, result) {
+        var builder = result.builder;
+        if (showError(t, err, builder)) {
+            return;
+        }
+
+        var expectedFilesystem = {
+            'test4': {
+                'Dockerfile': fileAndContents['Dockerfile'],
+                'foo': fileAndContents['foo'],
+                'dir1': {
+                    'file1.txt': fileAndContents['dir1/file1.txt']
+                }
+            }
+        };
+        verifyFilesystem(t, builder, '/', expectedFilesystem);
+
+        testEnd(t, builder);
+    });
+});
+
+
+tape('directoryCopyAlternatives', function (t) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM busybox',
+            'RUN mkdir /test1',
+            'RUN mkdir /test2',
+            'RUN mkdir /test3',
+            'RUN mkdir /test4',
+            'RUN mkdir -p /deep1/in/depth',
+            'RUN mkdir -p /deep2/in/depth',
+            'RUN mkdir -p /deep3/in/depth',
+            'RUN mkdir -p /deep4/in/depth',
+            'COPY . /test1',
+            'COPY . /test2/',
+            'COPY / /test3',
+            'COPY / /test4/',
+            'COPY . /deep1/in',
+            'COPY . /deep2/in/',
+            'COPY / /deep3/in',
+            'COPY / /deep4/in/'
+        ].join('\n'),
+        'foo': 'hello',
+        'dir1/file1.txt': 'I am a file'
+    };
+
+    testBuildContents(t, fileAndContents, function (err, result) {
+        var builder = result.builder;
+        if (showError(t, err, builder)) {
+            return;
+        }
+
+        var d = {
+            'Dockerfile': fileAndContents['Dockerfile'],
+            'foo': fileAndContents['foo'],
+            'dir1': {
+                'file1.txt': fileAndContents['dir1/file1.txt']
+            }
+        };
+        var expectedFilesystem = {};
+        var i;
+
+        // Deep is like d, but already contains an empty 'depth' directory.
+        var deep = utils.objCopy(d);
+        deep['depth'] = {};
+
+        for (i = 1; i < 5; i++) {
+            expectedFilesystem['test' + i] = d;
+            expectedFilesystem['deep' + i] = {
+                'in': deep
+            };
+        }
+        verifyFilesystem(t, builder, '/', expectedFilesystem);
+
+        testEnd(t, builder);
+    });
+});
+
+
+tape('subDirectoryCopy', function (t) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM busybox',
+            'RUN mkdir /dirA',
+            'RUN mkdir /dirB',
+            'RUN mkdir /dirC',
+            'COPY /dir /dirA',
+            'COPY /dir/subdirB /dirB',
+            'COPY /dir/subdirC /dirC'
+        ].join('\n'),
+        'dir/fileA.txt': 'This is file A',
+        'dir/fileB.txt': 'This is file B',
+        'dir/subdirB/subfileB.txt': 'This is subfile B',
+        'dir/subdirC/subfileC.txt': 'This is subfile C'
+    };
+
+    testBuildContents(t, fileAndContents, function (err, result) {
+        var builder = result.builder;
+        if (showError(t, err, builder)) {
+            return;
+        }
+
+        var expectedFilesystem = {
+            'dirA': {
+                'fileA.txt': fileAndContents['dir/fileA.txt'],
+                'fileB.txt': fileAndContents['dir/fileB.txt'],
+                'subdirB': {
+                    'subfileB.txt': fileAndContents['dir/subdirB/subfileB.txt']
+                },
+                'subdirC': {
+                    'subfileC.txt': fileAndContents['dir/subdirC/subfileC.txt']
+                }
+            },
+            'dirB': {
+                'subfileB.txt': fileAndContents['dir/subdirB/subfileB.txt']
+            },
+            'dirC': {
+                'subfileC.txt': fileAndContents['dir/subdirC/subfileC.txt']
+            }
+        };
+        verifyFilesystem(t, builder, '/', expectedFilesystem);
+
+        testEnd(t, builder);
+    });
+});
+
+
 // Ensure that adding a lot of small files doesn't error out, or take a long
 // time to complete.
 tape('addLotsOfFiles', { timeout: 60 * 1000 }, function (t) {
@@ -1270,27 +1459,23 @@ tape('addLotsOfFiles', { timeout: 60 * 1000 }, function (t) {
         }
 
         // Verify directory contents - the tar file contains 100 directories
-        // (1..100), with each dir holding 100 files (1..100).
+        // (1..100), with each dir holding 100 empty files (1..100).
         var NUM_FILES_AND_DIRS = 100;
-        var contents;
-        var expectedContents = [];
+
+        var d = {};
         var i;
-        var root = builder.containerRootDir;
         for (i = 1; i <= NUM_FILES_AND_DIRS; i++) {
-            expectedContents.push(String(i));
+            d[String(i)] = '';
         }
-        expectedContents = expectedContents.sort();
+
+        var expectedFilesystem = {
+            'Dockerfile': fs.readFileSync(path.join(builder.contextExtractDir,
+                'Dockerfile')).toString()
+        };
         for (i = 1; i <= NUM_FILES_AND_DIRS; i++) {
-            contents = fs.readdirSync(path.join(root, String(i)));
-            contents = contents.sort();
-            t.deepEqual(contents, expectedContents, 'Checking dir entries');
+            expectedFilesystem[String(i)] = d;
         }
-        // Verify the main dir (it should have an extra 'Dockerfile' filename).
-        expectedContents.push('Dockerfile');
-        expectedContents = expectedContents.sort();
-        contents = fs.readdirSync(root);
-        contents = contents.sort();
-        t.deepEqual(contents, expectedContents, 'Checking root dir entries');
+        verifyFilesystem(t, builder, '/', expectedFilesystem);
 
         testEnd(t, builder);
     });
