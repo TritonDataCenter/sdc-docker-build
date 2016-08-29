@@ -33,7 +33,6 @@
     "assert-plus": "0.1.5",
     "async": "0.9.0",
     "bunyan": "1.3.4",
-    "chownr": "1.0.1",
     "docker-file-parser": "git+https://github.com/joyent/node-docker-file-parser.git#ba6b4ce0e09a1432b200a55851d2899109d68ae2",
     "jsprim": "1.2.2",
     "lazy-property": "1.0.0",

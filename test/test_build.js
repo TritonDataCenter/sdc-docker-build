@@ -99,8 +99,6 @@ function testBuildContext(t, fpath, opts, callback) {
     var tasks = [];
 
     var builder = new dockerbuild.Builder(buildOpts);
-    builder.chownUid = process.getuid();
-    builder.chownGid = process.getgid();
 
     builder.on('message', function (event) {
         messages.push(event);
