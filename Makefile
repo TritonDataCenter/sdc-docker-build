@@ -19,6 +19,8 @@ JSSTYLE_FILES	 = $(JS_FILES)
 JSSTYLE_FLAGS	 = -f tools/jsstyle.conf
 CLEAN_FILES += ./node_modules
 
+NODE_PREBUILT_VERSION=v0.10.46
+
 include ./tools/mk/Makefile.defs
 ifeq ($(shell uname -s),SunOS)
 	include ./tools/mk/Makefile.node_prebuilt.defs
