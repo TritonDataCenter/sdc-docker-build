@@ -186,6 +186,14 @@ function verifyFileContents(t, builder, filepath, contents) {
     }
 }
 
+function verifySymlink(t, builder, filepath, details) {
+    var fullpath = path.join(builder.containerRootDir, filepath);
+    if (fs.readlinkSync(fullpath) !== details.linkname) {
+        t.equal(fs.readlinkSync(fullpath), details.linkname,
+            'Link names for ' + filepath + ' do not match');
+    }
+}
+
 function verifyFilesystem(t, builder, containerPath, filesystem) {
     var entry;
     var fullpath = path.join(builder.containerRootDir, containerPath);
@@ -205,13 +213,16 @@ function verifyFilesystem(t, builder, containerPath, filesystem) {
         name = names[i];
         entry = filesystem[name];
         relPath = path.join(containerPath, name);
-        stat = fs.statSync(path.join(fullpath, name));
+        stat = fs.lstatSync(path.join(fullpath, name));
         if (stat.isDirectory()) {
             assert.object(entry, name);
             verifyFilesystem(t, builder, relPath, entry);
         } else if (stat.isFile()) {
             assert.string(entry, name);
             verifyFileContents(t, builder, relPath, entry);
+        } else if (stat.isSymbolicLink()) {
+            assert.object(entry, name);
+            verifySymlink(t, builder, relPath, entry);
         } else {
             t.fail('Unexpected file type at: ' + relPath);
         }
@@ -265,7 +276,11 @@ function createTarStream(fileAndContents) {
     var pack = tar.pack();
 
     Object.keys(fileAndContents).forEach(function (name) {
-        pack.entry({ name: name }, fileAndContents[name]);
+        if (typeof (fileAndContents[name]) === 'object') {
+            pack.entry(fileAndContents[name]);
+        } else {
+            pack.entry({ name: name }, fileAndContents[name]);
+        }
     });
 
     pack.finalize();
@@ -1255,6 +1270,41 @@ tape('symlinks', function (t) {
             '/foo/');
         t.equal(builder.containerRealpath('/linkWayUp'), '/');
         t.equal(builder.containerRealpath('/linkWayUp/foo/bar'), '/foo/bar');
+
+        testEnd(t, builder);
+    });
+});
+
+
+tape('symlinkMissing', function (t) {
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM busybox',
+            'ADD config /home/config/',
+            'ADD config/theMissingLink /myNewMissingLink'
+        ].join('\n'),
+        'config/theMissingLink': {
+            name: 'config/theMissingLink',
+            type: 'symlink',
+            linkname: '/missing/directory/path'
+        }
+    };
+
+    testBuildContents(t, fileAndContents, function (err, result) {
+        var builder = result.builder;
+        if (showError(t, err, builder)) {
+            return;
+        }
+
+        var expectedFilesystem = {
+            'home': {
+                'config': {
+                    'theMissingLink': fileAndContents['config/theMissingLink']
+                }
+            },
+            'myNewMissingLink': fileAndContents['config/theMissingLink']
+        };
+        verifyFilesystem(t, builder, '/', expectedFilesystem);
 
         testEnd(t, builder);
     });

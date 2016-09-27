@@ -1,7 +1,8 @@
 {
   "name": "sdc-docker-build",
-  "version": "0.1.0",
-  "description": "Parses a Dockerfile and returns an array of commands.",
+  "version": "0.1.1",
+  "description": "Docker build helper module for sdc-docker",
+  "private": true,
   "keywords": [
     "dockerfile",
     "docker",
