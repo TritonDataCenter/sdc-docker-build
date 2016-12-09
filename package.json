@@ -1,6 +1,6 @@
 {
   "name": "sdc-docker-build",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Docker build helper module for sdc-docker",
   "private": true,
   "keywords": [
@@ -31,20 +31,20 @@
     "url": "https://github.com/joyent/node-sdc-docker-build"
   },
   "dependencies": {
-    "assert-plus": "0.1.5",
+    "assert-plus": "1.0.0",
     "async": "0.9.0",
-    "bunyan": "1.3.4",
+    "bunyan": "1.8.5",
     "docker-file-parser": "git+https://github.com/joyent/node-docker-file-parser.git#ba6b4ce0e09a1432b200a55851d2899109d68ae2",
-    "jsprim": "1.2.2",
+    "jsprim": "1.3.1",
     "lazy-property": "1.0.0",
-    "libuuid": "0.1.4",
-    "minimatch": "2.0.9",
-    "mkdirp": "^0.3.4",
-    "once": "1.3.0"
+    "libuuid": "0.2.1",
+    "minimatch": "3.0.3",
+    "mkdirp": "0.5.1",
+    "once": "1.4.0"
   },
   "devDependencies": {
     "rimraf": "2.4.3",
-    "tape": "^2.12.3",
+    "tape": "4.6.3",
     "tar-stream": "1.3.1",
     "temp": "0.8.3"
   },
