@@ -16,8 +16,8 @@ var util = require('util');
 var assert = require('assert-plus');
 var bunyan = require('bunyan');
 var jsprim = require('jsprim');
-var libuuid = require('libuuid');
 var mkdirp = require('mkdirp');
+var mod_uuid = require('uuid');
 var rimraf = require('rimraf');
 var tape = require('tape');
 var tar = require('tar-stream');
@@ -73,7 +73,8 @@ function testBuildContext(t, fpath, opts, callback) {
     });
     log.rbuffer = ringbuffer;
 
-    var uuid = libuuid.create();
+    var existingImages = opts.existingImages || [];
+    var uuid = mod_uuid.v4();
     var tmpDir = os.tmpDir();
     // Ensure the tmpDir is the full real path.
     tmpDir = fs.realpathSync(tmpDir);
@@ -91,8 +92,7 @@ function testBuildContext(t, fpath, opts, callback) {
         commandType: 'build',
         contextFilepath: fpath,
         workDir: configDir,
-        containerRootDir: zoneRoot,
-        existingImages: opts.existingImages
+        containerRootDir: zoneRoot
     };
 
     var messages = [];
@@ -116,21 +116,42 @@ function testBuildContext(t, fpath, opts, callback) {
             return;
         }
 
+        if (task.type === 'find_cached_image') {
+            result = [null, existingImages.filter(function (img) {
+                return task.cmd === img.image.container_config.Cmd.join(' ');
+            })[0]];
+            task.callback.apply(builder, result);
+            return;
+        }
+
         if (t.hasOwnProperty('buildTaskHandler')) {
             result = t.buildTaskHandler(builder, task);
 
         } else if (task.type === 'image_reprovision') {
             // Return a result for the busybox image task.
             result = [null, {
+                'digest': 'sha256:cfa753dfea5e68a24366dfba16e6edf573'
+                            + 'daa447abf65bc11619c1a98a3aff54',
                 'image': {
-                    'Config': {
+                    'config': {
                         'Cmd': [ 'sh' ]
                     },
-                    'ContainerConfig': {
+                    'container_config': {
                         'Cmd': [ '/bin/sh', '-c', '#(nop) CMD ["sh"]' ]
                     },
-                    'Id': 'cfa753dfea5e68a24366dfba16e6edf573'
-                                + 'daa447abf65bc11619c1a98a3aff54'
+                    'history': [
+                        {
+                                'created': '2016-10-07T21:03:58.16783626Z',
+                                'created_by': '/bin/sh -c #(nop) ADD file:ced3'
+                                    + 'aa7577c8f970403004e45dd91e9240b1e3ee8bd'
+                                    + '109178822310bb5c4a4f7 in / '
+                            },
+                            {
+                                'created': '2016-10-07T21:03:58.469866982Z',
+                                'created_by': '/bin/sh -c #(nop)  CMD [\'sh\']',
+                                'empty_layer': true
+                        }
+                    ]
                 }
             }];
         } else if (task.type === 'run') {
@@ -358,19 +379,24 @@ function simpleRunTaskHandler(builder, task) {
 }
 
 
+function dumpLogs(builder) {
+    var records = builder.log.rbuffer.records;
+    records = records.map(function (log) {
+        return util.format('%s: %s', bunyan.nameFromLevel[log.level],
+            log.msg);
+    });
+    if (records.length > 0) {
+        console.log('  ---\n');
+        console.log('    Last %d log messages:\n', records.length, records);
+        console.log('  ...\n');
+    }
+}
+
+
 function showError(t, err, builder) {
     t.ifErr(err, 'check build successful');
     if (err) {
-        var records = builder.log.rbuffer.records;
-        records = records.map(function (log) {
-            return util.format('%s: %s', bunyan.nameFromLevel[log.level],
-                log.msg);
-        });
-        if (records.length > 0) {
-            console.log('  ---\n');
-            console.log('    Last %d log messages:\n', records.length, records);
-            console.log('  ...\n');
-        }
+        dumpLogs(builder);
         testEnd(t, builder, err);
         return true;
     }
@@ -378,8 +404,9 @@ function showError(t, err, builder) {
 }
 
 function getBuildStepOutput(builder, stepNo) {
+    var idx = (stepNo-1) - (builder.totalNumSteps - builder.layers.length);
     return util.format(' ---> %s\n',
-        builder.getShortId(builder.layers[stepNo-1].image.id));
+        builder.getShortId(builder.layers[idx].imageDigest));
 }
 
 
@@ -397,13 +424,13 @@ tape('helloWorldRun', function (t) {
         var messages = result.messages;
         var vmId = builder.zoneUuid;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/4 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : COPY hello /\n' },
+            { type: 'stdout', message: 'Step 2/4 : COPY hello /\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
-            { type: 'stdout', message: 'Step 3 : CMD /hello\n' },
+            { type: 'stdout', message: 'Step 3/4 : CMD /hello\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 3) },
-            { type: 'stdout', message: 'Step 4 : RUN /hello how are you\n' },
+            { type: 'stdout', message: 'Step 4/4 : RUN /hello how are you\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 4) },
@@ -427,7 +454,7 @@ tape('helloWorldRun', function (t) {
         t.deepEqual(task, expectedHelloTask, 'check tasks');
 
         // Ensure the Cmd in ContainerConfig differs slightly from Config.
-        var img = builder.layers[3].image;
+        var img = builder.layers[2].image;
         t.notDeepEqual(img.container_config.Cmd, img.config.Cmd);
 
         testEnd(t, builder);
@@ -453,14 +480,14 @@ tape('busybox', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/4 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : LABEL version="1.0"\n' },
+            { type: 'stdout', message: 'Step 2/4 : LABEL version="1.0"\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
-            { type: 'stdout', message: 'Step 3 : MAINTAINER Jérôme Petazzoni'
-                                        + ' <jerome@docker.com>\n' },
+            { type: 'stdout', message: 'Step 3/4 : '
+                + 'MAINTAINER Jérôme Petazzoni <jerome@docker.com>\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 3) },
-            { type: 'stdout', message: 'Step 4 : ADD rootfs.tar /\n' },
+            { type: 'stdout', message: 'Step 4/4 : ADD rootfs.tar /\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 4) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
                                                     builder.getShortId()) }
@@ -493,9 +520,9 @@ tape('fromBusyboxLabel', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM busybox\n' },
+            { type: 'stdout', message: 'Step 1/2 : FROM busybox\n' },
             { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
-            { type: 'stdout', message: 'Step 2 : LABEL sdcdocker="true"\n' },
+            { type: 'stdout', message: 'Step 2/2 : LABEL sdcdocker="true"\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
                                                     builder.getShortId()) }
@@ -518,9 +545,9 @@ tape('addDirectory', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/2 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : ADD data /data/\n' },
+            { type: 'stdout', message: 'Step 2/2 : ADD data /data/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
                                                     builder.getShortId()) }
@@ -543,9 +570,9 @@ tape('addDirectoryRoot', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/2 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : COPY . /\n' },
+            { type: 'stdout', message: 'Step 2/2 : COPY . /\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
                                                     builder.getShortId()) }
@@ -568,9 +595,9 @@ tape('addMulti', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/2 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : COPY /foo/bar /other/dir '
+            { type: 'stdout', message: 'Step 2/2 : COPY /foo/bar /other/dir '
                 + '/dest/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
@@ -604,68 +631,68 @@ tape('addTarfile', function (t) {
         var messages = result.messages;
         var vmId = builder.zoneUuid;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM busybox\n' },
+            { type: 'stdout', message: 'Step 1/14 : FROM busybox\n' },
             { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
 
-            { type: 'stdout', message: 'Step 2 : ADD test.tar /\n' },
+            { type: 'stdout', message: 'Step 2/14 : ADD test.tar /\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
-            { type: 'stdout', message: 'Step 3 : RUN cat /test/foo '
+            { type: 'stdout', message: 'Step 3/14 : RUN cat /test/foo '
                 + '| grep Hi\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: 'Hi\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 3) },
 
-            { type: 'stdout', message: 'Step 4 : ADD test.tar /test.tar\n' },
+            { type: 'stdout', message: 'Step 4/14 : ADD test.tar /test.tar\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 4) },
-            { type: 'stdout', message: 'Step 5 : RUN cat /test.tar/test/foo '
+            { type: 'stdout', message: 'Step 5/14 : RUN cat /test.tar/test/foo '
                 + '| grep Hi\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: 'Hi\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 5) },
 
-            { type: 'stdout', message: 'Step 6 : ADD test.tar /unlikely-to-'
+            { type: 'stdout', message: 'Step 6/14 : ADD test.tar /unlikely-to-'
                 + 'exist\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 6) },
-            { type: 'stdout', message: 'Step 7 : RUN cat /unlikely-to-exist/'
+            { type: 'stdout', message: 'Step 7/14 : RUN cat /unlikely-to-exist/'
                 + 'test/foo | grep Hi\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: 'Hi\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 7) },
 
-            { type: 'stdout', message: 'Step 8 : ADD test.tar /unlikely-to-'
+            { type: 'stdout', message: 'Step 8/14 : ADD test.tar /unlikely-to-'
                 + 'exist-trailing-slash/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 8) },
-            { type: 'stdout', message: 'Step 9 : RUN cat /unlikely-to-exist'
+            { type: 'stdout', message: 'Step 9/14 : RUN cat /unlikely-to-exist'
                 + '-trailing-slash/test/foo | grep Hi\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: 'Hi\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 9) },
 
-            { type: 'stdout', message: 'Step 10 : RUN mkdir /existing-directory'
-                + '\n' },
+            { type: 'stdout', message: 'Step 10/14 : '
+                + 'RUN mkdir /existing-directory\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 10) },
 
-            { type: 'stdout', message: 'Step 11 : ADD test.tar /existing-'
+            { type: 'stdout', message: 'Step 11/14 : ADD test.tar /existing-'
                 + 'directory\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 11) },
-            { type: 'stdout', message: 'Step 12 : RUN cat /existing-directory/'
-                + 'test/foo | grep Hi\n' },
+            { type: 'stdout', message: 'Step 12/14 : '
+                + 'RUN cat /existing-directory/test/foo | grep Hi\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: 'Hi\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 12) },
 
-            { type: 'stdout', message: 'Step 13 : ADD test.tar /existing-'
+            { type: 'stdout', message: 'Step 13/14 : ADD test.tar /existing-'
                 + 'directory-trailing-slash/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 13) },
-            { type: 'stdout', message: 'Step 14 : RUN cat /existing-directory-'
-                + 'trailing-slash/test/foo | grep Hi\n' },
+            { type: 'stdout', message: 'Step 14/14 : RUN cat '
+                + '/existing-directory-trailing-slash/test/foo | grep Hi\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: 'Hi\n' },
@@ -693,12 +720,12 @@ tape('addTarfileAsFile', function (t) {
         var messages = result.messages;
         var vmId = builder.zoneUuid;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM busybox\n' },
+            { type: 'stdout', message: 'Step 1/3 : FROM busybox\n' },
             { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
 
-            { type: 'stdout', message: 'Step 2 : ADD test.tar /test.tar\n' },
+            { type: 'stdout', message: 'Step 2/3 : ADD test.tar /test.tar\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
-            { type: 'stdout', message: 'Step 3 : RUN [[ -d /test.tar ]]\n' },
+            { type: 'stdout', message: 'Step 3/3 : RUN [[ -d /test.tar ]]\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 3) },
@@ -728,39 +755,39 @@ tape('addWildcard', function (t) {
         var messages = result.messages;
         var vmId = builder.zoneUuid;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM busybox\n' },
+            { type: 'stdout', message: 'Step 1/10 : FROM busybox\n' },
             { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
-            { type: 'stdout', message: 'Step 2 : COPY file*.txt /tmp/\n' },
+            { type: 'stdout', message: 'Step 2/10 : COPY file*.txt /tmp/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
-            { type: 'stdout', message: 'Step 3 : RUN ls /tmp/file1.txt '
+            { type: 'stdout', message: 'Step 3/10 : RUN ls /tmp/file1.txt '
                 + '/tmp/file2.txt\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 3) },
-            { type: 'stdout', message: 'Step 4 : RUN mkdir /tmp1\n' },
+            { type: 'stdout', message: 'Step 4/10 : RUN mkdir /tmp1\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 4) },
-            { type: 'stdout', message: 'Step 5 : COPY dir* /tmp1/\n' },
+            { type: 'stdout', message: 'Step 5/10 : COPY dir* /tmp1/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 5) },
-            { type: 'stdout', message: 'Step 6 : RUN ls /tmp1\n' },
+            { type: 'stdout', message: 'Step 6/10 : RUN ls /tmp1\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 6) },
-            { type: 'stdout', message: 'Step 7 : RUN ls /tmp1/dirt '
+            { type: 'stdout', message: 'Step 7/10 : RUN ls /tmp1/dirt '
                 + '/tmp1/nested_file /tmp1/nested_dir/nest_nest_file\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 7) },
-            { type: 'stdout', message: 'Step 8 : RUN mkdir /tmp2\n' },
+            { type: 'stdout', message: 'Step 8/10 : RUN mkdir /tmp2\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 8) },
-            { type: 'stdout', message: 'Step 9 : ADD dir/*dir robots.txt '
+            { type: 'stdout', message: 'Step 9/10 : ADD dir/*dir robots.txt '
                 + '/tmp2/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 9) },
-            { type: 'stdout', message: 'Step 10 : RUN ls /tmp2/nest_nest_file '
-                + '/tmp2/robots.txt\n' },
+            { type: 'stdout', message: 'Step 10/10 : '
+                + 'RUN ls /tmp2/nest_nest_file /tmp2/robots.txt\n' },
             { type: 'stdout', message: util.format(' ---> Running in %s\n',
                                                     builder.getShortId(vmId)) },
             { type: 'stdout', message: getBuildStepOutput(builder, 10) },
@@ -959,11 +986,11 @@ tape('addFileNonexistingDir', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/3 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : WORKDIR /foo/bar\n' },
+            { type: 'stdout', message: 'Step 2/3 : WORKDIR /foo/bar\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
-            { type: 'stdout', message: 'Step 3 : ADD file.txt .\n' },
+            { type: 'stdout', message: 'Step 3/3 : ADD file.txt .\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 3) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
                                                     builder.getShortId()) }
@@ -1004,8 +1031,12 @@ tape('variables', function (t) {
 
         // Check the command variables were properly updated.
         var builder = result.builder;
-        builder.layers.forEach(function (layer) {
+        builder.layers.forEach(function (layer, idx) {
             var cmd = layer.cmd;
+            if (cmd === null) {
+                t.ok(idx <= 1, 'Cmd only null for inherited entries');
+                return;
+            }
             if (cmd.lineno === 16) {
                 t.equal(cmd.name, 'ADD', 'Line 16 should be an ADD command');
                 t.deepEqual(cmd.args,
@@ -1090,16 +1121,35 @@ tape('caching', function (t) {
     var buildOpts = {
         existingImages: [
             {
-                'Config': configWorkdir,
-                'ContainerConfig': configWorkdir,
-                'Id': '4672e708a636d238f3af151d33c9aeee14d7eabd60b5646'
-                    + '04d050ec200917177'
+                digest: 'sha256:4672e708a636d238f3af151d33c9aeee14d7eabd60b5646'
+                    + '04d050ec200917177',
+                image: {
+                    config: configWorkdir,
+                    container_config: configWorkdir,
+                    history: [
+                        {
+                            created: '2016-05-05T18:13:29.963947682Z',
+                            created_by: '/bin/sh -c #(nop) ENV foo=bar',
+                            empty_layer: true
+                        }
+                    ]
+                }
             },
             {
-                'Config': configAddFile,
-                'ContainerConfig': configAddFile,
-                'Id': '6530e406dfec6ea95412afc1495226896eb9c8e0bea695b'
-                    + '29102bca1f04ee205'
+                digest: 'sha256:6530e406dfec6ea95412afc1495226896eb9c8e0bea695b'
+                    + '29102bca1f04ee205',
+                image: {
+                    config: configAddFile,
+                    container_config: configAddFile,
+                    history: [
+                        {
+                            created: '2016-05-05T18:13:29.963947682Z',
+                            created_by: '/bin/sh -c #(nop) '
+                                + 'WORKDIR /Me Now <me@now.com>/foo/bar',
+                            empty_layer: true
+                        }
+                    ]
+                }
             }
         ]
     };
@@ -1112,12 +1162,12 @@ tape('caching', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/3 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : WORKDIR /foo/bar\n' },
+            { type: 'stdout', message: 'Step 2/3 : WORKDIR /foo/bar\n' },
             { type: 'stdout', message: ' ---> Using cache\n' },
             { type: 'stdout', message: ' ---> 4672e708a636\n' },
-            { type: 'stdout', message: 'Step 3 : ADD file.txt .\n' },
+            { type: 'stdout', message: 'Step 3/3 : ADD file.txt .\n' },
             { type: 'stdout', message: ' ---> Using cache\n' },
             { type: 'stdout', message: ' ---> 6530e406dfec\n' },
             { type: 'stdout', message: 'Successfully built 6530e406dfec\n' }
@@ -1156,10 +1206,19 @@ tape('partialcaching', function (t) {
     var buildOpts = {
         existingImages: [
             {
-                'Config': config,
-                'ContainerConfig': config,
-                'Id': '4672e708a636d238f3af151d33c9aeee14d7eabd60b5646'
-                    + '04d050ec200917177'
+                digest: 'sha256:4672e708a636d238f3af151d33c9aeee14d7eabd60b5646'
+                    + '04d050ec200917177',
+                image: {
+                    config: config,
+                    container_config: config,
+                    history: [
+                        {
+                            created: '2016-05-05T18:13:29.963947682Z',
+                            created_by: '/bin/sh -c #(nop) ENV foo=bar',
+                            empty_layer: true
+                        }
+                    ]
+                }
             }
         ]
     };
@@ -1172,12 +1231,12 @@ tape('partialcaching', function (t) {
         var builder = result.builder;
         var messages = result.messages;
         var expectedMessages = [
-            { type: 'stdout', message: 'Step 1 : FROM scratch\n' },
+            { type: 'stdout', message: 'Step 1/3 : FROM scratch\n' },
             { type: 'stdout', message: ' --->\n' },
-            { type: 'stdout', message: 'Step 2 : WORKDIR /foo/bar\n' },
+            { type: 'stdout', message: 'Step 2/3 : WORKDIR /foo/bar\n' },
             { type: 'stdout', message: ' ---> Using cache\n' },
             { type: 'stdout', message: ' ---> 4672e708a636\n' },
-            { type: 'stdout', message: 'Step 3 : ADD file.txt .\n' },
+            { type: 'stdout', message: 'Step 3/3 : ADD file.txt .\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 3) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
                                                     builder.getShortId()) }
