@@ -38,7 +38,7 @@
     "lazy-property": "1.0.0",
     "minimatch": "3.0.3",
     "mkdirp": "0.5.1",
-    "once": "1.4.0"
+    "once": "1.4.0",
     "uuid": "3.0.1"
   },
   "devDependencies": {
