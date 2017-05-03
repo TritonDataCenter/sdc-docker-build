@@ -33,7 +33,7 @@
   "dependencies": {
     "assert-plus": "1.0.0",
     "async": "2.1.2",
-    "docker-file-parser": "git+https://github.com/joyent/node-docker-file-parser.git#7b7171f90b197037fac7e2cc8fe6c79e7ced57a3",
+    "docker-file-parser": "1.0.2",
     "jsprim": "1.3.1",
     "lazy-property": "1.0.0",
     "minimatch": "3.0.3",
