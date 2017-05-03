@@ -104,10 +104,6 @@ function testBuildContext(t, fpath, opts, callback) {
         messages.push(event);
     });
 
-    builder.on('image_reprovisioned', function (event) {
-        event.callback.apply(builder, [null]);
-    });
-
     builder.on('task', function (task) {
         var result = [null];
 
