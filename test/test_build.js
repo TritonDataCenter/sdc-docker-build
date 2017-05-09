@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright (c) 2016, Joyent, Inc.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 var child_process = require('child_process');
 var fs = require('fs');
@@ -126,7 +126,7 @@ function testBuildContext(t, fpath, opts, callback) {
         } else if (task.type === 'image_reprovision') {
             // Return a result for the busybox image task.
             result = [null, {
-                'digest': 'sha256:cfa753dfea5e68a24366dfba16e6edf573'
+                'config_digest': 'sha256:cfa753dfea5e68a24366dfba16e6edf573'
                             + 'daa447abf65bc11619c1a98a3aff54',
                 'image': {
                     'config': {
@@ -1117,8 +1117,8 @@ tape('caching', function (t) {
     var buildOpts = {
         existingImages: [
             {
-                digest: 'sha256:4672e708a636d238f3af151d33c9aeee14d7eabd60b5646'
-                    + '04d050ec200917177',
+                config_digest: 'sha256:4672e708a636d238f3af151d33c9aeee14d7eab'
+                    + 'd60b564604d050ec200917177',
                 image: {
                     config: configWorkdir,
                     container_config: configWorkdir,
@@ -1132,8 +1132,8 @@ tape('caching', function (t) {
                 }
             },
             {
-                digest: 'sha256:6530e406dfec6ea95412afc1495226896eb9c8e0bea695b'
-                    + '29102bca1f04ee205',
+                config_digest: 'sha256:6530e406dfec6ea95412afc1495226896eb9c8e'
+                    + '0bea695b29102bca1f04ee205',
                 image: {
                     config: configAddFile,
                     container_config: configAddFile,
@@ -1202,8 +1202,8 @@ tape('partialcaching', function (t) {
     var buildOpts = {
         existingImages: [
             {
-                digest: 'sha256:4672e708a636d238f3af151d33c9aeee14d7eabd60b5646'
-                    + '04d050ec200917177',
+                config_digest: 'sha256:4672e708a636d238f3af151d33c9aeee14d7eab'
+                    + 'd60b564604d050ec200917177',
                 image: {
                     config: config,
                     container_config: config,

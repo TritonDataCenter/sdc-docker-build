@@ -1,8 +1,7 @@
 {
   "name": "sdc-docker-build",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Docker build helper module for sdc-docker",
-  "private": true,
   "keywords": [
     "dockerfile",
     "docker",
