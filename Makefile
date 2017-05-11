@@ -19,34 +19,25 @@ JSSTYLE_FILES	 = $(JS_FILES)
 JSSTYLE_FLAGS	 = -f tools/jsstyle.conf
 CLEAN_FILES += ./node_modules
 
-NODE_PREBUILT_VERSION=v0.10.46
-
 include ./tools/mk/Makefile.defs
-ifeq ($(shell uname -s),SunOS)
-	include ./tools/mk/Makefile.node_prebuilt.defs
-else
-	NPM := $(shell which npm)
-	NPM_EXEC=$(NPM)
-endif
-include ./tools/mk/Makefile.smf.defs
 
-
-VERSION=$(shell json -f $(TOP)/package.json version)
-COMMIT=$(shell git describe --all --long  | awk -F'-g' '{print $$NF}')
 
 #
 # Targets
 #
 .PHONY: all
 all:
-	$(NPM) install
+	npm install
+
+$(TAPE):
+	npm install
 
 # Run *unit* tests.
 .PHONY: test
-test:
+test: $(TAPE)
 	@(for F in test/test_*.js; do \
 		echo "# $$F" ;\
-		$(NODE) $(TAPE) $$F ;\
+		$(TAPE) $$F ;\
 		[[ $$? == "0" ]] || exit 1; \
 	done)
 
@@ -56,8 +47,4 @@ git-hooks:
 
 
 include ./tools/mk/Makefile.deps
-ifeq ($(shell uname -s),SunOS)
-	include ./tools/mk/Makefile.node_prebuilt.targ
-endif
-include ./tools/mk/Makefile.smf.targ
 include ./tools/mk/Makefile.targ
