@@ -29,6 +29,33 @@ var utils = require('../lib/utils');
 
 // - Globals
 
+var gBusyboxConfigDigest = 'sha256:cfa753dfea5e68a24366dfba16e6edf573'
+    + 'daa447abf65bc11619c1a98a3aff54';
+var gBusyboxShortId = gBusyboxConfigDigest.substr(7, 12);
+var gBusyboxImg = {
+    config_digest: gBusyboxConfigDigest,
+    image: {
+        config: {
+            Cmd: ['sh']
+        },
+        container_config: {
+            Cmd: ['/bin/sh', '-c', '#(nop) CMD ["sh"]']
+        },
+        history: [
+            {
+                created: '2016-10-07T21:03:58.16783626Z',
+                created_by: '/bin/sh -c #(nop) ADD file:ced3aa7577c8f970403004'
+                    + 'e45dd91e9240b1e3ee8bd109178822310bb5c4a4f7 in / '
+            },
+            {
+                created: '2016-10-07T21:03:58.469866982Z',
+                created_by: '/bin/sh -c #(nop)  CMD [\'sh\']',
+                empty_layer: true
+            }
+        ]
+    }
+};
+
 var testContextDir = path.join(__dirname, 'files');
 var tarExe = 'tar';
 if (process.platform === 'sunos') {
@@ -124,32 +151,19 @@ function testBuildContext(t, fpath, opts, callback) {
             result = t.buildTaskHandler(builder, task);
 
         } else if (task.type === 'image_reprovision') {
-            // Return a result for the busybox image task.
-            result = [null, {
-                'config_digest': 'sha256:cfa753dfea5e68a24366dfba16e6edf573'
-                            + 'daa447abf65bc11619c1a98a3aff54',
-                'image': {
-                    'config': {
-                        'Cmd': [ 'sh' ]
-                    },
-                    'container_config': {
-                        'Cmd': [ '/bin/sh', '-c', '#(nop) CMD ["sh"]' ]
-                    },
-                    'history': [
-                        {
-                                'created': '2016-10-07T21:03:58.16783626Z',
-                                'created_by': '/bin/sh -c #(nop) ADD file:ced3'
-                                    + 'aa7577c8f970403004e45dd91e9240b1e3ee8bd'
-                                    + '109178822310bb5c4a4f7 in / '
-                            },
-                            {
-                                'created': '2016-10-07T21:03:58.469866982Z',
-                                'created_by': '/bin/sh -c #(nop)  CMD [\'sh\']',
-                                'empty_layer': true
-                        }
-                    ]
+            assert.string(task.imageName, 'task.imageName');
+            var cachedImg = existingImages.filter(function _cacheFilter(img) {
+                assert.string(img.config_digest, 'img.config_digest');
+                return task.imageName === img.config_digest;
+            })[0];
+            if (cachedImg) {
+                if (cachedImg.filesystem) {
+                    addFilesystem(builder, '/', cachedImg.filesystem);
                 }
-            }];
+                result = [null, cachedImg];
+            } else {
+                result = [null, gBusyboxImg];
+            }
         } else if (task.type === 'run') {
             // Hook up the simple run command handler.
             tasks.push(task);
@@ -242,6 +256,35 @@ function verifyFilesystem(t, builder, containerPath, filesystem) {
             verifySymlink(t, builder, relPath, entry);
         } else {
             t.fail('Unexpected file type at: ' + relPath);
+        }
+    }
+}
+
+// Add the filesystem (a map of directories/files) into the container at the
+// given containerPath.
+function addFilesystem(builder, containerPath, filesystem) {
+    assert.object(builder, 'builder');
+    assert.string(containerPath, 'containerPath');
+    assert.object(filesystem, 'filesystem');
+
+    var entry;
+    var fullpath;
+    var i;
+    var name;
+    var names = Object.keys(filesystem);
+
+    for (i = 0; i < names.length; i++) {
+        name = names[i];
+        entry = filesystem[name];
+        fullpath = path.join(builder.containerRootDir, containerPath, name);
+        if (typeof (entry) === 'string') {
+            fs.writeFileSync(fullpath, entry);
+        } else {
+            assert.object(entry, name);
+            if (!fs.existsSync(fullpath)) {
+                fs.mkdirSync(fullpath);
+            }
+            addFilesystem(builder, path.join(containerPath, name), entry);
         }
     }
 }
@@ -383,7 +426,8 @@ function dumpLogs(builder) {
     });
     if (records.length > 0) {
         console.log('  ---\n');
-        console.log('    Last %d log messages:\n', records.length, records);
+        console.log('    Last %d log messages:\n',
+            records.length, records.join('\n'));
         console.log('  ...\n');
     }
 }
@@ -517,7 +561,7 @@ tape('fromBusyboxLabel', function (t) {
         var messages = result.messages;
         var expectedMessages = [
             { type: 'stdout', message: 'Step 1/2 : FROM busybox\n' },
-            { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
+            { type: 'stdout', message: ' ---> ' + gBusyboxShortId + '\n' },
             { type: 'stdout', message: 'Step 2/2 : LABEL sdcdocker="true"\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
             { type: 'stdout', message: util.format('Successfully built %s\n',
@@ -628,7 +672,7 @@ tape('addTarfile', function (t) {
         var vmId = builder.zoneUuid;
         var expectedMessages = [
             { type: 'stdout', message: 'Step 1/14 : FROM busybox\n' },
-            { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
+            { type: 'stdout', message: ' ---> ' + gBusyboxShortId + '\n' },
 
             { type: 'stdout', message: 'Step 2/14 : ADD test.tar /\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
@@ -717,7 +761,7 @@ tape('addTarfileAsFile', function (t) {
         var vmId = builder.zoneUuid;
         var expectedMessages = [
             { type: 'stdout', message: 'Step 1/3 : FROM busybox\n' },
-            { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
+            { type: 'stdout', message: ' ---> ' + gBusyboxShortId + '\n' },
 
             { type: 'stdout', message: 'Step 2/3 : ADD test.tar /test.tar\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
@@ -752,7 +796,7 @@ tape('addWildcard', function (t) {
         var vmId = builder.zoneUuid;
         var expectedMessages = [
             { type: 'stdout', message: 'Step 1/10 : FROM busybox\n' },
-            { type: 'stdout', message: ' ---> cfa753dfea5e\n' },
+            { type: 'stdout', message: ' ---> ' + gBusyboxShortId + '\n' },
             { type: 'stdout', message: 'Step 2/10 : COPY file*.txt /tmp/\n' },
             { type: 'stdout', message: getBuildStepOutput(builder, 2) },
             { type: 'stdout', message: 'Step 3/10 : RUN ls /tmp/file1.txt '
@@ -875,6 +919,82 @@ tape('copy to dir without trailing slash', function (t) {
         'file.txt': 'hello'
     };
     testBuildContents(t, fileAndContents, function (err, result) {
+        var builder = result.builder;
+        if (showError(t, err, builder)) {
+            return;
+        }
+
+        var expectedFilesystem = {
+            'adir': {
+                'file.txt': fileAndContents['file.txt']
+            }
+        };
+        verifyFilesystem(t, builder, '/', expectedFilesystem);
+
+        testEnd(t, builder);
+    });
+});
+
+
+// DOCKER-1086: Test copying a file to a directory, but leave out the trailing
+// slash. Following docker/docker this should be allowed. This test is meant to
+// ensure that the docker copy command works correctly when the previous command
+// was cached.
+tape('copy to dir without trailing slash (DOCKER-1086)', function (t) {
+    var configWorkdir = {
+        'AttachStdin': false,
+        'AttachStderr': false,
+        'AttachStdout': false,
+        'Cmd': ['/bin/sh', '-c', '#(nop) WORKDIR /adir'],
+        'Domainname': '',
+        'Entrypoint': null,
+        'Env': null,
+        'Hostname': '',
+        'Image': null,
+        'Labels': null,
+        'OnBuild': null,
+        'OpenStdin': false,
+        'StdinOnce': false,
+        'Tty': false,
+        'User': '',
+        'Volumes': null,
+        'WorkingDir': '/adir'
+    };
+
+    var fileAndContents = {
+        'Dockerfile': [
+            'FROM scratch',
+            'WORKDIR /adir',
+            'COPY file.txt .'
+        ].join('\n'),
+        'file.txt': 'hello'
+    };
+
+    var buildOpts = {
+        existingImages: [
+            {
+                config_digest: 'sha256:4672e708a636d238f3af151d33c9aeee14d7eab'
+                    + 'd60b564604d050ec200917177',
+                image: {
+                    config: configWorkdir,
+                    container_config: configWorkdir,
+                    history: [
+                        {
+                            created: '2017-08-10T12:00:00.000000000Z',
+                            created_by: '/bin/sh -c #(nop) WORKDIR /adir',
+                            empty_layer: true
+                        }
+                    ]
+                },
+                // Note: Filesystem is the complete files/dirs for this image.
+                filesystem: {
+                    'adir': {}
+                }
+            }
+        ]
+    };
+
+    testBuildContents(t, fileAndContents, buildOpts, function (err, result) {
         var builder = result.builder;
         if (showError(t, err, builder)) {
             return;
