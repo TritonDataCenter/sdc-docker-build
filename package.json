@@ -1,6 +1,6 @@
 {
   "name": "sdc-docker-build",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Docker build helper module for sdc-docker",
   "keywords": [
     "dockerfile",
@@ -32,7 +32,7 @@
   "dependencies": {
     "assert-plus": "1.0.0",
     "async": "2.1.2",
-    "docker-file-parser": "1.0.2",
+    "docker-file-parser": "1.0.5",
     "jsprim": "1.3.1",
     "lazy-property": "1.0.0",
     "minimatch": "3.0.3",
